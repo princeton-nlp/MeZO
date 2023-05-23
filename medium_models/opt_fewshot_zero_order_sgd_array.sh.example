@@ -1,0 +1,43 @@
+#!/bin/bash
+
+export LD_LIBRARY_PATH=/u/tianyug/project/cudnn-linux-x86_64-8.7.0.84_cuda11-archive/lib:$LD_LIBRARY_PATH
+source ~/project/.venv3.8/bin/activate
+
+SEEDs=(42 13 21 87 100)
+BSs=(4 8 16)
+LRs=(1e-5 1e-6)
+EPSs=(1e-3 1e-4 1e-5)
+STEPs=(10000)
+
+LOGITS=$(jq -n '{"SNLI": 3, "MNLI": 3, "trec": 6, "sst-5": 5}["'$TASK'"] // 2')
+
+INDEX=$SLURM_ARRAY_TASK_ID
+
+SEED_INDEX=$(expr $INDEX % 5)
+BS_INDEX=$(expr $INDEX / 5 % 3)
+LR_INDEX=$(expr $INDEX / 15 % 2)
+EPS_INDEX=$(expr $INDEX / 30 % 3)
+STEP_INDEX=$(expr $INDEX / 90)
+
+echo $SEED_INDEX, $BS_INDEX, $LR_INDEX, $EPS_INDEX, $STEP_INDEX
+
+SEED=${SEEDs[$SEED_INDEX]}
+BS=${BSs[$BS_INDEX]}
+LR=${LRs[$LR_INDEX]}
+EPS=${EPSs[$EPS_INDEX]}
+STEP=${STEPs[$STEP_INDEX]}
+
+K=16
+TAG=k16-opt125m-zero-order-sgd 
+
+echo "Seed: $SEED"
+echo "BS: $BS"
+echo "LR: $LR"
+echo "EPS: $EPS"
+
+EVAL_STEP=100
+echo "Step: $STEP; Eval step: $EVAL_STEP"
+
+
+TYPE=prompt GRID_TAG=seed$SEED-bs$BS-lr$LR-eps$EPS-step$STEP-evalstep$EVAL_STEP STEPS=$STEP TASK=$TASK TAG=$TAG SEED=$SEED MODEL=facebook/opt-125m K=$K WANDB_MODE=offline \
+    bash run_fewshot_opt.sh --per_device_train_batch_size $BS --per_device_eval_batch_size 4 --learning_rate $LR --zero_order_optim --zero_order_eps $EPS --lr_scheduler_type "constant" --optimizer "sgd" --evaluate_during_training --eval_steps $EVAL_STEP  $@
