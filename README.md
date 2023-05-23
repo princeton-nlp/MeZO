@@ -1,56 +1,5 @@
-# A Kernel-Based View of Language Model Fine-Tuning
-
-## Documentation for Alex and Eshaan
-Follow the installation and data preparation instructions below. Install W&B on top of it and make sure you're logged in. `run_fewshot.sh` has the script for running the code - you will need to specify a `TAG` that you can search by later to find the results. So you could for example do 
-```
-TAG=debug WANDB_MODE=online WANDB_PROJECT=your-project TASK=SNLI MODEL=roberta-large K=256 run_fewshot.sh --zero_order_optim --zero_order_eps 1e-3 --learning_rate 1e-6 --zero_order_use_trainer_optim
-```
-We have many tasks implemented. I would say SNLI with RoBERTa-large, because it's not too hard but not too easy either...it's good practice to eventually do things for all 5 seeds, but when you're debugging you can just use one seed. `K=256` is what I've been using for the smaller models.
-
-Reference numbers with K=256:
-- Zero-shot: 50.2
-- Linear probing (freeze model, learn head on representations): 77.9 (4.3)
-- Adam FT (grid searched): 87.0 (5.3)
-- ZO-SGD: 74.0 (2.9)
-- ZO-SGD with best HPs + large budget: 79.1 (3.2)
-- ZO-Adam: 71.7 (2.8)
-
-Here are the relevant flags:
-- `--zero_order_optim`: uses ZO instead of FT
-- `--zero_order_eps`: the epsilon to use in the ZO algorithm
-- `--zero_order_use_trainer_optim`: uses the PyTorch trainer instead of applying gradients manually. Less memory efficient but compatible with all the other opt flags like `--weight_decay`.
-- `--zero_order_sample`: number of zs to use at each gradient step
-- `--zero_order_sample_scheduler`: {"linear, "power", "constant"}. When this is set to "linear", `--zero_order_sample` specifies the max number of samples.
-- `--scale_lr_with_samples`: scales the LR with the number of samples of z. Instead of using the average of the projected gradients, just directly uses the sum
-- `--preconditioned_zero_order`: runs the preconditioned ZO algorithm. Uses backprop in the beginning to estimate the scales of the gradients. 
-
-## Grid search
-
-Copy the example file you want to use and edit the grid, then to run grid search, execute the following bash (modify NUM_GRID_SEARCH to your number of grid search experiments)
-```bash
-for TASK in SST-2 SNLI trec MRPC
-do
-sbatch --output=slurm/%A_%a-%x.out -N 1 -n 1 --cpus-per-task=5 --mem=20G --gres=gpu:rtx_2080:1 --mail-type=FAIL,TIME_LIMIT  -A allcs --time 1:0:0 --array 0-{NUM_GRID_SEARCH-1} --job-name sometag-$TASK  <<EOF
-#!/bin/bash
-TASK=$TASK bash opt_fewshot_zero_order_adam_array.sh
-EOF
-done
-```
-
-## In-context learning
-```bash
-SEED=$SEED TYPE=prompt-demo GRID_TAG=$TAG STEPS=0 TASK=$TASK TAG="icl-32" MODEL=$MODEL K=16 \
-bash run_zeroshot_opt.sh --per_device_eval_batch_size 2 --gpt3_in_context_head --gpt3_in_context_num 32 --truncate_head --auto_demo --num_sample 1 --efficient_zero_order --efficient_zero_order_fp16
-```
-
--------
-
-This is the implementation for the paper [A Kernel-Based View of Language Model Fine-tuning](https://arxiv.org/abs/2210.05643)
-and can be used to compute kernel approximations for the fine-tuning of pre-trained language models.
-
-We extend the [LM-BFF](https://github.com/princeton-nlp/LM-BFF) repository and
-add a new "kernel trainer" powered by [functorch](https://github.com/pytorch/functorch) to compute empirical-NTK kernel matrices using the SGD, SignGD or Asymmetric-SignGD kernel formulas.
-We also provide our pre-computed kernels for download to facilitate further analysis.
+# MeZO: Fine-Tuning Large Language Models with Just Forward Passes
+This is the implementation for the paper Fine-Tuning Large Language Models with Just Forward Passes.
 
 ## Installation
 Please install all the dependency packages by using the following command:
