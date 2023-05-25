@@ -14,7 +14,7 @@ For reproducing RoBERTa-large experiments, please refer to the `medium_models` f
 ```bibtex
 @article{malladi2023mezo,
    title={Fine-Tuning Large Language Models with Just Forward Passes},
-   author={Gao, Tianyu and Yen, Howard and Yu, Jiatong and Chen, Danqi},
+   author={Malladi, Sadhika and Gao, Tianyu and Nichani, Eshaan and Damian, Alex and Lee, Jason D and Chen, Danqi and Arora, Sanjeev},
    year={2023}
 }
 ```
