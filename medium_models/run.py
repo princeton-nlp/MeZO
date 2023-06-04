@@ -273,7 +273,7 @@ class DynamicTrainingArguments(TrainingArguments):
     # For ensemble
     array_id: int = field(
         default=-1,
-        metadata={"help": "Array ID (contains seed and hyper-paramter search) to idenfity the model"}
+        metadata={"help": "Array ID (contains seed and hyper-parameter search) to idenfity the model"}
     )
 
     model_id: int = field(
