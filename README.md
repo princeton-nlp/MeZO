@@ -1,6 +1,6 @@
 # MeZO: Fine-Tuning Language Models with Just Forward Passes
 
-This is the implementation for the paper "Fine-Tuning Language Models with Just Forward Passes".
+This is the implementation for the paper [Fine-Tuning Language Models with Just Forward Passes](https://arxiv.org/pdf/2305.17333.pdf).
 
 We are still actively cleaning the code base. A better version of README is coming soon!
 
