@@ -1,9 +1,13 @@
-# Installation
+# MeZO on Medium-sized Masked Language Models
+
+This part of the code is for MeZO experiments on RoBERTa-large.
+
+## Installation
 Follow the installation and data preparation instructions in [this fine-tuning repository](https://github.com/princeton-nlp/LM-Kernel-FT) based on LM-BFF.
 
 **NOTE**: Different versions of some packages (`pytorch`, `numpy`, `transformers`) may cause minor variations in results.
 
-# Usage
+## Usage
 `run.py` runs ZO training (and standard fine-tuning) of OPT-family and RoBERTa-family models. To use MeZO with SGD, add the flags `--zero_order_optim` and `--efficient_zero_order`. You can either specify the number of gradient steps desired or the number of forward passes allowed. Training will terminate when one of the two conditions is reached.
 
 ## Ablations
