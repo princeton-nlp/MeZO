@@ -33,6 +33,7 @@ def calculate_metric(predictions, metric_name):
         # For question answering
         return np.mean([any([normalize_answer(ans) == normalize_answer(pred.predicted_candidate) for ans in pred.correct_candidate]) for pred in predictions])
     elif metric_name == "f1":
+        # For question answering
         f1 = []
         for pred in predictions:
             all_f1s = []
@@ -56,6 +57,9 @@ def calculate_metric(predictions, metric_name):
 
 
 def f1(pred, gold):
+    """
+    This separate F1 function is used as non-differentiable metric for SQuAD
+    """
     if gold[0] == "CANNOTANSWER" or gold[0] == "no answer":
         return int(normalize_answer(gold[0]) == normalize_answer(pred))
     else:

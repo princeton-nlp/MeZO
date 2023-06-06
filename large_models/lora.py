@@ -10,7 +10,10 @@ from torch.nn import functional as F
 import math
 
 def find_module(root_module: nn.Module, key: str):
-    """From OpenDelta"""
+    """
+    Find a module with a specific name in a Transformer model
+    From OpenDelta https://github.com/thunlp/OpenDelta
+    """
     sub_keys = key.split(".")
     parent_module = root_module
     for sub_key in sub_keys[:-1]:
@@ -20,8 +23,10 @@ def find_module(root_module: nn.Module, key: str):
 
 
 class LoRALinear(nn.Linear):
-    # LoRA implemented in a dense layer
-    # Copied from https://github.com/microsoft/LoRA/blob/main/loralib/layers.py
+    """
+    LoRA implemented in a dense layer
+    From https://github.com/microsoft/LoRA/blob/main/loralib/layers.py
+    """
     def __init__(
         self, 
         in_features: int, 
@@ -96,6 +101,11 @@ class LoRALinear(nn.Linear):
 class LoRA:
 
     def __init__(self, model, r, alpha, float16):
+        """
+        Input:
+        r, alpha: LoRA hyperparameters
+        float16: Whether the model parameters are float16 or not
+        """
 
         self.model = model
         self.hidden_dim = model.config.hidden_size
@@ -108,6 +118,7 @@ class LoRA:
         else:
             raise NotImplementedError
 
+        # Insert LoRA
         for key, _ in model.named_modules():
             if key[-len(attention_name):] == attention_name:
                 logger.info(f"Inject lora to: {key}")
@@ -130,31 +141,7 @@ class LoRA:
                 else:
                     raise NotImplementedError
         
+        # Freeze non-LoRA parameters
         for n, p in model.named_parameters():
             if "lora" not in n:
-                # logger.info(f"Freeze {n}")
                 p.requires_grad = False
-
-
-def test():
-    from transformers import AutoTokenizer, AutoModelForCausalLM
-    model = AutoModelForCausalLM.from_pretrained("facebook/opt-125m")
-    tokenizer = AutoTokenizer.from_pretrained("facebook/opt-125m")
-    model.cuda()
-    model = model.half()
-
-
-    inputs = tokenizer("Hello, my dog is", return_tensors="pt").to(model.device)
-    o = model(**inputs)[0][0, -1]
-    print("Before")
-    print(o)
-
-    LoRA(model, r=8, alpha=16, float16=True)
-
-    print("After")
-    o = model(**inputs)[0][0, -1]
-    print(o)
-
-
-if __name__ == "__main__":
-    test()

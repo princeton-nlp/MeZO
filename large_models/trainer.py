@@ -209,94 +209,24 @@ OPTIMIZER_NAME = "optimizer.pt"
 SCHEDULER_NAME = "scheduler.pt"
 SCALER_NAME = "scaler.pt"
 
-def fsdp_auto_wrap_policy(transformer_layer_cls):
-    import functools
-
-    from torch.distributed.fsdp.wrap import _or_policy, lambda_auto_wrap_policy, transformer_auto_wrap_policy
-
-    def lambda_policy_fn(module):
-        if (
-            len(list(module.named_children())) == 0
-            and getattr(module, "weight", None) is not None
-            and module.weight.requires_grad
-        ):
-            return True
-        return False
-    
-    lambda_policy = functools.partial(lambda_auto_wrap_policy, lambda_fn=lambda_policy_fn)
-    transformer_wrap_policy = functools.partial(
-        transformer_auto_wrap_policy,
-        transformer_layer_cls=(
-            *transformer_layer_cls,
-        ),
-    )
-
-    auto_wrap_policy = functools.partial(_or_policy, policies=[lambda_policy, transformer_wrap_policy])
-    return auto_wrap_policy
 
 class OurTrainer(Trainer):
 
     from transformers.trainer_pt_utils import _get_learning_rate, log_metrics, metrics_format, save_metrics, save_state
 
-    def create_optimizer(self):
-        """
-        Setup the optimizer.
-
-        We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
-        Trainer's init through `optimizers`, or subclass and override this method in a subclass.
-        """
-        opt_model = self.model_wrapped if is_sagemaker_mp_enabled() else self.model
-
-        if self.optimizer is None:
-            decay_parameters = get_parameter_names(opt_model, ALL_LAYERNORM_LAYERS)
-            decay_parameters = [name for name in decay_parameters if "bias" not in name]
-            optimizer_grouped_parameters = [
-                {
-                    "params": [p for n, p in opt_model.named_parameters() if n in decay_parameters],
-                    "weight_decay": self.args.weight_decay,
-                },
-                {
-                    "params": [p for n, p in opt_model.named_parameters() if n not in decay_parameters],
-                    "weight_decay": 0.0,
-                },
-            ]
-
-            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
-
-            if self.sharded_ddp == ShardedDDPOption.SIMPLE:
-                self.optimizer = OSS(
-                    params=optimizer_grouped_parameters,
-                    optim=optimizer_cls,
-                    **optimizer_kwargs,
-                )
-            else:
-                self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
-                if optimizer_cls.__name__ == "Adam8bit":
-                    import bitsandbytes
-
-                    manager = bitsandbytes.optim.GlobalOptimManager.get_instance()
-
-                    for module in opt_model.modules():
-                        if isinstance(module, nn.Embedding):
-                            manager.register_module_override(module, "weight", {"optim_bits": 32})
-                            logger.debug(f"bitsandbytes: will optimize {module} in fp32")
-
-        if is_sagemaker_mp_enabled():
-            self.optimizer = smp.DistributedOptimizer(self.optimizer)
-
-        return self.optimizer
-
     def _inner_training_loop(
         self, batch_size=None, args=None, resume_from_checkpoint=None, trial=None, ignore_keys_for_eval=None
     ):
+        """
+        We overload the original training loop to add linear probing and MeZO. Search key word "MeZO added"
+        for those updates.
+        """
         self._train_batch_size = batch_size
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
 
-        # Linear probing
+        # MeZO added: Linear probing
         if self.args.linear_probing:
-            # raise NotImplementedError("Even though we have LP here, you shouldn't use it becuase LP does not work with LM objective (unless it's only classification task). \
-            #                           The reason is that we cannot cover all the words in the vocabulary. You should use --head_tuning")
 
             def _get_token_prediction_layer(model):
                 if model.config.model_type == "opt":
@@ -594,11 +524,7 @@ class OurTrainer(Trainer):
                 if step % args.gradient_accumulation_steps == 0:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
-                if epoch == 0 and step == 0 and self.args.zo_pc:
-                    self.zo_initialize_c(model, inputs)
-                elif step == 0 and self.args.zo_pc and self.args.zo_pc_recompute:
-                    self.zo_initialize_c(model, inputs)
-
+                # MeZO added: estimate gradient
                 if args.trainer == "zo":
                     tr_loss_step = self.zo_step(model, inputs)
                 else:
@@ -634,6 +560,7 @@ class OurTrainer(Trainer):
                     steps_in_epoch <= args.gradient_accumulation_steps
                     and (step + 1) == steps_in_epoch
                 ):
+                    # MeZO added: update model with the estimated gradient
                     if args.trainer == "zo":
                         self.zo_update(model)
                     else:
@@ -765,69 +692,33 @@ class OurTrainer(Trainer):
 
         return TrainOutput(self.state.global_step, train_loss, metrics)
 
-    # def zo_efficient_perturb_parameters(self, model, random_seed, scaling_factor=1):
-    #     torch.manual_seed(random_seed)
-    #     for name, param in self.named_parameters_to_optim:
-    #         z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
-    #         param.data = param.data + scaling_factor * z * self.args.zo_eps
-    #     return None
 
-    def zo_retrieve_c(self, param_name):
-        if self.args.zo_pc_split_by_emb:
-            for c_name in self.cs.keys():
-                if c_name in param_name:
-                    return c_name
-                else:
-                    return 'rest'
-        else:
-            for c_name in self.cs.keys():
-                if c_name in param_name:
-                    return c_name
+    ############## MeZO ##############
 
-        return '' # these parameters are likely not being used in the forward pass
 
-    def zo_perturb_parameters(self, random_vector=None, scaling_factor=1, layer_name=None, inplace=False, random_seed=None):
-        if random_vector is None:
-            random_vector = {}
-        
-        if inplace:
-            torch.manual_seed(random_seed if random_seed is not None else self.zo_random_seed)
+    def zo_perturb_parameters(self, random_seed=None, scaling_factor=1):
+        """
+        Perturb the parameters with random vector z.
+        Input: 
+        - random_seed: random seed for MeZO in-place perturbation (if it's None, we will use self.zo_random_seed)
+        - scaling_factor: theta = theta + scaling_factor * z * eps
+        """
+
+        # Set the random seed to ensure that we sample the same z for perturbation/update
+        torch.manual_seed(random_seed if random_seed is not None else self.zo_random_seed)
         
         for name, param in self.named_parameters_to_optim:
-            if layer_name is not None:
-                cname = self.zo_retrieve_c(name)
-                if cname != layer_name:
-                    continue
-            if inplace:
-                z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
-            else:
-                if name in random_vector:
-                    z = random_vector[name]
-                else:
-                    z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
-                    random_vector[name] = z
+            z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
             param.data = param.data + scaling_factor * z * self.args.zo_eps
 
-        return random_vector
-
-    def zo_get_num_samples(self):
-        if self.args.zo_sample_scheduler is None:
-            noise_sample_time = 1 
-        elif self.args.zo_sample_scheduler == "linear":
-            noise_sample_time = max(1, int(self.state.global_step / self.args.max_steps * self.args.zo_sample))
-        elif self.args.zo_sample_scheduler == "constant":
-            noise_sample_time = int(self.args.zo_sample)
-        elif self.args.zo_sample_scheduler == "power":
-            noise_sample_time = int(1.0002 ** self.state.global_step) # chose this constant for 10000 steps -> 8 z samples by the end
-        else:
-            raise NotImplementedError
-        # print("Sample %d zs" % (noise_sample_time))
-
-        return noise_sample_time
 
     def zo_forward(self, model, inputs):
+        """
+        Get (no gradient) loss from the model. Dropout is turned off too.
+        """
         model.eval()
         if self.args.non_diff:
+            # Non-differentiable objective (may require autoregressive generation)
             return self.zo_forward_nondiff(model, inputs)
 
         with torch.inference_mode():
@@ -835,447 +726,17 @@ class OurTrainer(Trainer):
             with self.compute_loss_context_manager():
                 loss = self.compute_loss(model, inputs)
             if self.args.n_gpu > 1:
+                # Warning: this is copied from the original Huggingface Trainer. Untested.
                 loss = loss.mean()  # mean() to average on multi-gpu parallel training
         return loss.detach()
 
-    def zo_step(self, model, inputs):
-        """
-        Gradient estimate. Return loss
-        """
-        args = self.args
-
-        # what parameters to optimize
-        self.named_parameters_to_optim = []
-        for name, param in model.named_parameters():
-            if (not args.zo_layer_wise_optim or f".{self.state.global_step % model.config.num_hidden_layers}." in name) and param.requires_grad:
-                self.named_parameters_to_optim.append((name, param))
-
-        if args.zo_pc:
-            # assert args.zo_torch_optim, 'preconditioned ZO requires using the trainer optimizer' 
-            num_zs = self.zo_get_num_samples()
-            if num_zs > 1:
-                assert args.zo_torch_optim, 'cannot sample multiple zs without storing intermediate gradient. use --zo_torch_optim.'
-
-            self.zo_pc_layers = [np.random.choice(self.layer_names)] if self.args.zo_pc_rnd_layers else self.layer_names
-            self.random_vector = {} # this one is shared across different layers
-            for layer in self.zo_pc_layers:
-                for _ in range(num_zs):
-                    if self.args.zo_inplace:
-                        self.zo_random_seed = np.random.randint(1000000000)
-                        if hasattr(self, "layer_zo_random_seed"):
-                            self.layer_zo_random_seed[layer] = self.zo_random_seed
-                        else:
-                            self.layer_zo_random_seed = {layer: self.zo_random_seed}
-
-                    c_i = self.cs[layer]
-                    c_i = 1.0 if c_i == 0 else c_i # if the scaling is 0, just reset it to 1 so that there can eventually be some gradient to those layers 
-                    self.random_vector.update(self.zo_perturb_parameters(scaling_factor=1.0/c_i, layer_name=layer, inplace=args.zo_inplace))
-                    loss1 = self.zo_forward(model, inputs)
-                    self.zo_perturb_parameters(random_vector=self.random_vector, scaling_factor=-2.0/c_i, layer_name=layer, inplace=args.zo_inplace)
-                    loss2 = self.zo_forward(model, inputs)
-                    self.zo_perturb_parameters(random_vector=self.random_vector, scaling_factor=1.0/c_i, layer_name=layer, inplace=args.zo_inplace)
-
-                    self.projected_grad = ((loss1 - loss2) / (2 * self.args.zo_eps)).item()
-                    assert self.args.gradient_accumulation_steps == 1, "gradient accumulation not supported for preconditioned ZO"
-                    # scale grad according to number of zs sampled
-                    if not self.args.zo_scale_lr_with_samples:
-                        self.projected_grad = self.projected_grad / float(num_zs)
-
-                    if self.args.zo_torch_optim: 
-                        if self.args.zo_inplace:
-                            torch.manual_seed(self.zo_random_seed)
-
-                        for name, param in self.named_parameters_to_optim:
-                            if self.zo_retrieve_c(name) == layer:
-                                z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype) if args.zo_inplace else self.random_vector[name]
-                                z_tilde = z * c_i
-
-                                if param.grad is None:
-                                    param.grad = self.projected_grad * z_tilde
-                                else:
-                                    param.grad += self.projected_grad * z_tilde
-        else:
-            # compute number of zs to sample
-            num_zs = self.zo_get_num_samples()
-            if num_zs > 1:
-                assert args.zo_torch_optim, 'cannot sample multiple zs without storing intermediate gradient. use --zo_torch_optim.'
-
-            for _ in range(num_zs):
-                # prepare for sampling new zs
-                self.random_vector = None
-                if self.args.zo_inplace:
-                    self.zo_random_seed = np.random.randint(1000000000)
-
-                # first function evaluation
-                self.random_vector = self.zo_perturb_parameters(inplace=self.args.zo_inplace)
-                loss1 = self.zo_forward(model, inputs)
-
-                # second function evaluation
-                self.random_vector = self.zo_perturb_parameters(self.random_vector, scaling_factor=-2, inplace=self.args.zo_inplace) 
-                loss2 = self.zo_forward(model, inputs)
-
-                self.projected_grad = ((loss1 - loss2) / (2 * self.args.zo_eps)).item()
-                print("%.5f | %.5f" % (loss1, loss2))
-
-                # scale grad according to accumulation
-                if self.args.gradient_accumulation_steps > 1:
-                    assert self.args.zo_torch_optim, 'grad accumulation not implemented for non-trainer ZO yet'
-                    self.projected_grad = self.projected_grad / self.args.gradient_accumulation_steps
-
-                # scale grad according to number of zs sampled
-                if not self.args.zo_scale_lr_with_samples:
-                    self.projected_grad = self.projected_grad / float(num_zs)
-
-                # store gradient in parameter buffer if using trainer
-                # o/w, the loop will exit after one round and the update will be applied directly (see below)
-                if self.args.zo_torch_optim:
-                    if self.args.zo_inplace:
-                        torch.manual_seed(self.zo_random_seed)
-
-                    for name, param in self.named_parameters_to_optim:
-                        # recover noise used in perturbations
-                        z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype) if args.zo_inplace else self.random_vector[name]
-
-                        if param.grad is None:
-                            param.grad = self.projected_grad * z
-                        else:
-                            param.grad += self.projected_grad * z
-
-                # reset model back to its parameters at start of step
-                self.zo_perturb_parameters(self.random_vector, inplace=self.args.zo_inplace)
-        
-        return loss1
-
-
-    def zo_update(self, model):
-        """
-        Update the parameters with the estimated gradients.
-        """
-        args = self.args
-        if args.zo_torch_optim:
-            # use torch optimizer
-            # norm clipping
-            if args.zo_clip_grad:
-                norm = torch.nn.utils.clip_grad_norm_(model.parameters(), self.args.max_grad_norm)
-
-            # update the parameters and step scheduler
-            self.optimizer.step()
-            self.lr_scheduler.step()
-            
-            model.zero_grad()
-        elif args.zo_pc:
-            assert args.gradient_accumulation_steps == 1, 'gradient accumulation is not supported for zero-order optimization'
-            assert args.zo_sample_scheduler is None
-            assert not self.args.zo_clip_grad, 'gradient clipping not implemented yet for non-trainer ZO'
-
-            for layer in self.zo_pc_layers:
-                if args.zo_inplace:
-                    torch.manual_seed(self.layer_zo_random_seed[layer])
-                c_i = self.cs[layer]
-                c_i = 1.0 if c_i == 0 else c_i # if the scaling is 0, just reset it to 1 so that there can eventually be some 
-                for name, param in self.named_parameters_to_optim:
-                    if self.zo_retrieve_c(name) == layer:
-                        z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype) if args.zo_inplace else self.random_vector[name]
-                        z_tilde = z * c_i
-                        if "bias" not in name and "layer_norm" not in name and "layernorm" not in name:
-                            param.data = param.data - self._get_learning_rate() * (self.projected_grad * z_tilde + args.weight_decay * param.data)
-                        else:
-                            param.data = param.data - self._get_learning_rate() * (self.projected_grad * z_tilde)
-        else:
-            # no torch optimizer
-            # WARNING: no gradient accumulation when not storing the grad
-            assert args.gradient_accumulation_steps == 1, 'gradient accumulation is not supported for zero-order optimization'
-            assert args.zo_sample_scheduler is None
-            assert not self.args.zo_clip_grad, 'gradient clipping not implemented yet for non-trainer ZO'
-
-            if args.zo_inplace:
-                torch.manual_seed(self.zo_random_seed)     
-
-            for name, param in self.named_parameters_to_optim:
-                z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype) if args.zo_inplace else self.random_vector[name]
-                if "bias" not in name and "layer_norm" not in name and "layernorm" not in name:
-                    param.data = param.data - self._get_learning_rate() * (self.projected_grad * z + args.weight_decay * param.data)
-                else:
-                    param.data = param.data - self._get_learning_rate() * (self.projected_grad * z)
-
-            self.lr_scheduler.step()
-
-
-    def zo_initialize_c(self, model, inputs):
-        self.named_parameters_to_optim = []
-        for name, param in model.named_parameters():
-            if (not self.args.zo_layer_wise_optim or f".{self.state.global_step % model.config.num_hidden_layers}." in name) and param.requires_grad:
-                self.named_parameters_to_optim.append((name, param))
-
-        if self.args.zo_pc_split_by_emb:
-            self.cs = {'embed': 0.0, 'lm_head': 0.0, 'rest': 0.0}
-            self.param_norms = copy.deepcopy(self.cs)
-            self.num_params = copy.deepcopy(self.cs)
-        else:
-            self.cs = {'embed': 0.0, 'lm_head': 0.0, 'final_layer_norm': 0.0} 
-            # OPT: embed_tokens; embed_positions
-            # RoBERTa: embeddings
-            self.param_norms = {'embed': 0.0, 'lm_head': 0.0}
-            self.num_params = {'embed': 0, 'lm_head': 0}
-            self.num_model_layers = model.config.num_hidden_layers
-            layer_name = "layers" if model.config.model_type == "opt" else "layer"
-            for i in range(self.num_model_layers): 
-                self.cs[f'{layer_name}.{i}.'] = 0.0
-                self.param_norms[f'{layer_name}.{i}.'] = 0.0
-                self.num_params[f'{layer_name}.{i}.'] = 0
-        
-        # ZO estimation of c's - not very accurate, might need more z's
-        if self.args.zo_pc_w_zo_estimate: 
-            for layer in self.cs.keys():
-                if self.args.zo_inplace:
-                    self.zo_random_seed = np.random.randint(1000000000)
-
-                z = self.zo_perturb_parameters(layer_name=layer, inplace=self.args.zo_inplace)
-                loss1 = self.zo_forward(model, inputs)
-                z = self.zo_perturb_parameters(random_vector=z, scaling_factor=-2, layer_name=layer, inplace=self.args.zo_inplace)
-                loss2 = self.zo_forward(model, inputs)
-
-                projected_grad = (loss1 - loss2) / (2 * self.args.zo_eps)
-                self.cs[layer] = torch.abs(projected_grad).detach().item()
-
-                z = self.zo_perturb_parameters(random_vector=z, layer_name=layer, inplace=self.args.zo_inplace)
-
-                logger.info("ZO estimate of c for layer %s: %.5f" % (layer, self.cs[layer]))
-        else:
-            model.eval()
-            inputs = self._prepare_inputs(inputs)
-            with self.compute_loss_context_manager():
-                loss = self.compute_loss(model, inputs)
-            if self.args.n_gpu > 1:
-                loss = loss.mean()  # mean() to average on multi-gpu parallel training
-            loss.backward()
-            for name, param in self.named_parameters_to_optim:
-                if param.grad is None:
-                    print("No gradient:", name)
-                else:
-                    ckey = self.zo_retrieve_c(name)
-                    if ckey in self.cs:
-                        self.cs[ckey] += torch.sum(param.grad ** 2).detach().item()
-                        self.num_params[ckey] += param.grad.numel().detach().item()
-
-        if self.args.zo_pc_use_norm:
-            for ckey in self.cs:
-                self.cs[ckey] = math.sqrt(self.cs[ckey])
-                if self.args.zo_pc_scale_by_num_params:
-                    self.param_norms[ckey] /= math.sqrt(self.num_params[ckey])
-
-        # check if there are any layer missing
-        for name, param in self.named_parameters_to_optim:
-            if len(self.zo_retrieve_c(name)) == 0:
-                logger.warn("Param %s no match to any preset layer" % name)
-
-        self.layer_names = list(self.cs.keys())
-        model.zero_grad()
-
-
-    def _wrap_model(self, model, training=True, dataloader=None):
-        if self.args.use_ipex:
-            dtype = torch.bfloat16 if self.use_cpu_amp else torch.float32
-            model = self.ipex_optimize_model(model, training, dtype=dtype)
-
-        if is_sagemaker_mp_enabled():
-            # Wrapping the base model twice in a DistributedModel will raise an error.
-            if isinstance(self.model_wrapped, smp.model.DistributedModel):
-                return self.model_wrapped
-            return smp.DistributedModel(model, backward_passes_per_step=self.args.gradient_accumulation_steps)
-
-        # already initialized its own DDP and AMP
-        if self.deepspeed:
-            return self.deepspeed
-
-        # train/eval could be run multiple-times - if already wrapped, don't re-wrap it again
-        if unwrap_model(model) is not model:
-            return model
-
-        # Mixed precision training with apex (torch < 1.6)
-        if self.use_apex and training:
-            model, self.optimizer = amp.initialize(model, self.optimizer, opt_level=self.args.fp16_opt_level)
-
-        # Multi-gpu training (should be after apex fp16 initialization) / 8bit models does not support DDP
-        if self.args.n_gpu > 1 and not getattr(model, "is_loaded_in_8bit", False):
-            model = nn.DataParallel(model)
-
-        if self.args.jit_mode_eval:
-            start_time = time.time()
-            model = self.torch_jit_model_eval(model, dataloader, training)
-            self.jit_compilation_time = round(time.time() - start_time, 4)
-
-        # Note: in torch.distributed mode, there's no point in wrapping the model
-        # inside a DistributedDataParallel as we'll be under `no_grad` anyways.
-        if not training:
-            return model
-
-        # Distributed training (should be after apex fp16 initialization)
-        if self.sharded_ddp is not None:
-            # Sharded DDP!
-            if self.sharded_ddp == ShardedDDPOption.SIMPLE:
-                model = ShardedDDP(model, self.optimizer)
-            else:
-                mixed_precision = self.args.fp16 or self.args.bf16
-                cpu_offload = ShardedDDPOption.OFFLOAD in self.args.sharded_ddp
-                zero_3 = self.sharded_ddp == ShardedDDPOption.ZERO_DP_3
-                # XXX: Breaking the self.model convention but I see no way around it for now.
-                if ShardedDDPOption.AUTO_WRAP in self.args.sharded_ddp:
-                    model = auto_wrap(model)
-                self.model = model = FullyShardedDDP(
-                    model,
-                    mixed_precision=mixed_precision,
-                    reshard_after_forward=zero_3,
-                    cpu_offload=cpu_offload,
-                ).to(self.args.device)
-        # Distributed training using PyTorch FSDP
-        elif self.fsdp is not None:
-            if not self.args.fsdp_config["xla"]:
-                # PyTorch FSDP!
-                from torch.distributed.fsdp.fully_sharded_data_parallel import CPUOffload, MixedPrecision
-                from torch.distributed.fsdp.fully_sharded_data_parallel import FullyShardedDataParallel as FSDP
-                from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy, transformer_auto_wrap_policy
-
-                if FSDPOption.OFFLOAD in self.args.fsdp:
-                    cpu_offload = CPUOffload(offload_params=True)
-                else:
-                    cpu_offload = CPUOffload(offload_params=False)
-
-                auto_wrap_policy = None
-
-                if FSDPOption.AUTO_WRAP in self.args.fsdp:
-                    if self.args.fsdp_config["fsdp_min_num_params"] > 0:
-                        auto_wrap_policy = functools.partial(
-                            size_based_auto_wrap_policy, min_num_params=self.args.fsdp_config["fsdp_min_num_params"]
-                        )
-                    elif self.args.fsdp_config.get("fsdp_transformer_layer_cls_to_wrap", None) is not None:
-                        transformer_cls_to_wrap = set()
-                        for layer_class in self.args.fsdp_config["fsdp_transformer_layer_cls_to_wrap"]:
-                            transformer_cls = get_module_class_from_name(model, layer_class)
-                            if transformer_cls is None:
-                                raise Exception("Could not find the transformer layer class to wrap in the model.")
-                            else:
-                                transformer_cls_to_wrap.add(transformer_cls)
-                        auto_wrap_policy = fsdp_auto_wrap_policy(transformer_cls_to_wrap)
-                        # auto_wrap_policy = functools.partial(
-                        #     transformer_auto_wrap_policy,
-                        #     # Transformer layer class to wrap
-                        #     transformer_layer_cls=transformer_cls_to_wrap,
-                        # )
-                mixed_precision_policy = None
-                dtype = None
-                if self.args.fp16:
-                    dtype = torch.float16
-                elif self.args.bf16:
-                    dtype = torch.bfloat16
-                if dtype is not None:
-                    mixed_precision_policy = MixedPrecision(param_dtype=dtype, reduce_dtype=dtype, buffer_dtype=dtype)
-                if type(model) != FSDP:
-                    # XXX: Breaking the self.model convention but I see no way around it for now.
-                    signature = inspect.signature(FSDP.__init__).parameters.keys()
-                    kwargs = {}
-                    for arg in ["limit_all_gathers", "forward_prefetch", "backward_prefetch"]:
-                        if arg in signature:
-                            kwargs[arg] = getattr(self, arg)
-                    self.model = model = FSDP(
-                        model,
-                        sharding_strategy=self.fsdp,
-                        cpu_offload=cpu_offload,
-                        auto_wrap_policy=auto_wrap_policy,
-                        mixed_precision=mixed_precision_policy,
-                        device_id=self.args.device,
-                        **kwargs,
-                    )
-            else:
-                try:
-                    from torch_xla.distributed.fsdp import XlaFullyShardedDataParallel as FSDP
-                    from torch_xla.distributed.fsdp import checkpoint_module
-                    from torch_xla.distributed.fsdp.wrap import (
-                        size_based_auto_wrap_policy,
-                        transformer_auto_wrap_policy,
-                    )
-                except ImportError:
-                    raise ImportError("Missing XLA FSDP related module; please make sure to use torch-xla >= 2.0.")
-                auto_wrap_policy = None
-                auto_wrapper_callable = None
-                if self.args.fsdp_config["fsdp_min_num_params"] > 0:
-                    auto_wrap_policy = functools.partial(
-                        size_based_auto_wrap_policy, min_num_params=self.args.fsdp_config["fsdp_min_num_params"]
-                    )
-                elif self.args.fsdp_config.get("fsdp_transformer_layer_cls_to_wrap", None) is not None:
-                    transformer_cls_to_wrap = set()
-                    for layer_class in self.args.fsdp_config["fsdp_transformer_layer_cls_to_wrap"]:
-                        transformer_cls = get_module_class_from_name(model, layer_class)
-                        if transformer_cls is None:
-                            raise Exception("Could not find the transformer layer class to wrap in the model.")
-                        else:
-                            transformer_cls_to_wrap.add(transformer_cls)
-                    auto_wrap_policy = functools.partial(
-                        transformer_auto_wrap_policy,
-                        # Transformer layer class to wrap
-                        transformer_layer_cls=transformer_cls_to_wrap,
-                    )
-                fsdp_kwargs = self.args.xla_fsdp_config
-                if self.args.fsdp_config["xla_fsdp_grad_ckpt"]:
-                    # Apply gradient checkpointing to auto-wrapped sub-modules if specified
-                    def auto_wrapper_callable(m, *args, **kwargs):
-                        return FSDP(checkpoint_module(m), *args, **kwargs)
-
-                # Wrap the base model with an outer FSDP wrapper
-                self.model = model = FSDP(
-                    model,
-                    auto_wrap_policy=auto_wrap_policy,
-                    auto_wrapper_callable=auto_wrapper_callable,
-                    **fsdp_kwargs,
-                )
-
-                # Patch `xm.optimizer_step` should not reduce gradients in this case,
-                # as FSDP does not need gradient reduction over sharded parameters.
-                def patched_optimizer_step(optimizer, barrier=False, optimizer_args={}):
-                    loss = optimizer.step(**optimizer_args)
-                    if barrier:
-                        xm.mark_step()
-                    return loss
-
-                xm.optimizer_step = patched_optimizer_step
-        elif is_sagemaker_dp_enabled():
-            model = nn.parallel.DistributedDataParallel(
-                model, device_ids=[int(os.getenv("SMDATAPARALLEL_LOCAL_RANK"))]
-            )
-        elif self.args.local_rank != -1:
-            kwargs = {}
-            if self.args.ddp_find_unused_parameters is not None:
-                kwargs["find_unused_parameters"] = self.args.ddp_find_unused_parameters
-            elif isinstance(model, PreTrainedModel):
-                # find_unused_parameters breaks checkpointing as per
-                # https://github.com/huggingface/transformers/pull/4659#issuecomment-643356021
-                kwargs["find_unused_parameters"] = not model.is_gradient_checkpointing
-            else:
-                kwargs["find_unused_parameters"] = True
-
-            if self.args.ddp_bucket_cap_mb is not None:
-                kwargs["bucket_cap_mb"] = self.args.ddp_bucket_cap_mb
-            if is_torch_neuroncore_available():
-                return model
-            model = nn.parallel.DistributedDataParallel(
-                model,
-                device_ids=[self.args.local_rank] if self.args._n_gpu != 0 else None,
-                output_device=self.args.local_rank if self.args._n_gpu != 0 else None,
-                **kwargs,
-            )
-
-        # torch.compile() needs to be called after wrapping the model with FSDP or DDP
-        # to ensure that it accounts for the graph breaks required by those wrappers
-        if self.args.torch_compile:
-            model = torch.compile(model, backend=self.args.torch_compile_backend, mode=self.args.torch_compile_mode)
-
-        return model
-
 
     def zo_forward_nondiff(self, model, inputs):
-        # Only support SQuAD for now
+        """
+        Get (no gradient) non-diffiable loss from the model.
+        """
         model.eval()
-        assert self.args.task_name == "SQuAD"
+        assert self.args.task_name == "SQuAD", "Non differentiable objective only supports SQuAD for now."
 
         with torch.inference_mode():
             inputs = self._prepare_inputs(inputs)
@@ -1293,7 +754,67 @@ class OurTrainer(Trainer):
         return -torch.tensor(np.mean(f1s), dtype=torch.float32)
 
 
+    def zo_step(self, model, inputs):
+        """
+        Estimate gradient by MeZO. Return the loss from f(theta + z)
+        """
+        args = self.args
+
+        # What parameters to optimize 
+        self.named_parameters_to_optim = []
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.named_parameters_to_optim.append((name, param))
+
+        # Sample the random seed for sampling z
+        self.zo_random_seed = np.random.randint(1000000000)
+
+        # First function evaluation
+        self.zo_perturb_parameters(scaling_factor=1)
+        loss1 = self.zo_forward(model, inputs)
+
+        # Second function evaluation
+        self.zo_perturb_parameters(scaling_factor=-2)
+        loss2 = self.zo_forward(model, inputs)
+
+        self.projected_grad = ((loss1 - loss2) / (2 * self.args.zo_eps)).item()
+
+        # No gradient accumulation support
+        assert self.args.gradient_accumulation_steps == 1
+
+        # Reset model back to its parameters at start of step
+        self.zo_perturb_parameters(scaling_factor=1)
+        
+        return loss1
+
+
+    def zo_update(self, model):
+        """
+        Update the parameters with the estimated gradients.
+        """
+        args = self.args
+
+        # Reset the random seed for sampling zs
+        torch.manual_seed(self.zo_random_seed)     
+
+        for name, param in self.named_parameters_to_optim:
+            # Resample z
+            z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
+            if "bias" not in name and "layer_norm" not in name and "layernorm" not in name:
+                param.data = param.data - self._get_learning_rate() * (self.projected_grad * z + args.weight_decay * param.data)
+            else:
+                param.data = param.data - self._get_learning_rate() * (self.projected_grad * z)
+
+        self.lr_scheduler.step()
+
+
+    ############## Misc overload functions ##############
+
+
     def _set_signature_columns_if_needed(self):
+        """
+        We overload this function for non-differentiable objective training to pass "gold" -- the gold text for the task
+        """
         if self._signature_columns is None:
             # Inspect model forward signature to keep only the arguments it accepts.
             signature = inspect.signature(self.model.forward)
@@ -1305,9 +826,7 @@ class OurTrainer(Trainer):
     
     def save_model(self, output_dir: Optional[str] = None, _internal_call: bool = False):
         """
-        Will save the model, so you can reload it using `from_pretrained()`.
-
-        Will only save from the main process.
+        We overload this function to fix an FSDP saving bug (before fix, it will likely cause OOM) 
         """
 
         if output_dir is None:
@@ -1331,6 +850,8 @@ class OurTrainer(Trainer):
         ):
             from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
             full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+
+            # Fix the FSDP loading bug
             with FSDP.state_dict_type(self.model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
                 state_dict = self.model.state_dict()
             # state_dict = self.model.state_dict()

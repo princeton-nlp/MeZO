@@ -1,3 +1,7 @@
+# For head-tuning, we use torch.no_grad() for all the forward functions except the lm head
+# The following code is mostly copied from https://github.com/huggingface/transformers/blob/main/src/transformers/models/opt/modeling_opt.py
+# Search "MeZO added" to find we we added
+
 # coding=utf-8
 # Copyright 2022 The Fairseq Authors and The HuggingFace Inc. team. All rights reserved.
 #
@@ -935,6 +939,7 @@ class OPTForCausalLM(OPTPreTrainedModel):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        # MeZO added: torch.no_grad
         with torch.no_grad():
             outputs = self.model.decoder(
                 input_ids=input_ids,

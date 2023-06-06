@@ -8,7 +8,10 @@ import torch
 from torch import nn
 
 def find_module(root_module: nn.Module, key: str):
-    """From OpenDelta"""
+    """
+    Find a module with a specific name in a Transformer model
+    From OpenDelta https://github.com/thunlp/OpenDelta
+    """
     sub_keys = key.split(".")
     parent_module = root_module
     for sub_key in sub_keys[:-1]:
@@ -18,6 +21,9 @@ def find_module(root_module: nn.Module, key: str):
 
 
 def attn_forward_hook(self, *args, **kwargs):
+    """
+    Replace the original attention forward with this to enable prefix
+    """
 
     def _expand_bsz(x, bsz):
         x = x.reshape(x.size(0), self.num_heads, -1).transpose(0,1) # (num_prefix, hidden) -> (num_head, num_prefix, hidden/num_head)
@@ -51,6 +57,9 @@ def attn_forward_hook(self, *args, **kwargs):
 
 def prepare_inputs_for_generation(
     self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs):
+    """
+    Replace the original "prepare_inputs_for_generation" with this to pass prefix correctly
+    """
     original_input_len = input_ids.size(-1)
     if past_key_values:
         input_ids = input_ids[:, -1:]
@@ -80,6 +89,14 @@ def prepare_inputs_for_generation(
 class PrefixTuning:
 
     def __init__(self, model, num_prefix, reparam=True, embed_dim=512, mid_dim=512, float16=False, init_by_real_act=False):
+        """
+        Inputs:
+        num_prefix: number of prefix tokens
+        reparam: use reparameterization trick (not used in MeZO)
+        embed_dim, mid_dim: hyperparameters for reparameterization trick (not used in MeZO)
+        float15: whether the model parameters are float15
+        init_by_real_act: init prefix tokens by real activations
+        """
 
         self.model = model
         self.num_prefix = num_prefix 
@@ -107,26 +124,30 @@ class PrefixTuning:
             # Initialize prefix with real words' activations
             assert not reparam
 
-            # Move the model to GPU first?
-            # model = model.cuda()
+            # Randomly sample input tokens
             input_tokens = torch.randint(low=0, high=model.config.vocab_size, size=(1, num_prefix), dtype=torch.long).cuda()
             if model.config.model_type == "opt":
                 with torch.no_grad():
+                    # Get the real activations
                     real_key_values = model(input_ids=input_tokens, use_cache=True).past_key_values
             else:
                 raise NotImplementedError   
 
+        # Insert prefix
         for key, _ in model.named_modules():
             if key[-len(attention_name):] == attention_name:
                 layer_id = int(key.split(layer_name)[1].split(".")[0])
                 logger.info(f"Inject prefix to: {key}")
                 _, _, attn = find_module(model, key)
+
+                # Replace the old forward functions
                 attn.original_forward = attn.forward
                 attn.forward = attn_forward_hook.__get__(attn, type(attn))
                 if not hasattr(attn, "num_heads"):
                     attn.num_heads = model.config.num_attention_heads
                 first = first_layer_name in key
                 self.add_prefix(attn, first=first, input_embeds=input_embeds)
+
                 if first and self.reparam:
                     input_embeds = attn.prefix_input_embeds
                 if init_by_real_act:
@@ -135,12 +156,15 @@ class PrefixTuning:
                     values = real_key_values[layer_id][1].squeeze(0).transpose(0, 1).reshape(num_prefix, -1)
                     attn.prefix_keys.data = keys.to(attn.prefix_keys.data.device)
                     attn.prefix_values.data = values.to(attn.prefix_values.data.device)
+
+        # Freeze non-prefix parameters
         for n, p in model.named_parameters():
             if "prefix" not in n:
-                # logger.info(f"Freeze {n}")
                 p.requires_grad = False
-        
+
+        # Replace the old prepare_inputs_for_generation function 
         model.prepare_inputs_for_generation = prepare_inputs_for_generation.__get__(model, type(model))
+
 
     def add_prefix(self, module, first, input_embeds=None):
         device = module.k_proj.weight.data.device
@@ -148,6 +172,7 @@ class PrefixTuning:
         module.reparam = self.reparam
         if self.reparam:
             if first:
+                # For the first layer we inject the embeddings
                 logger.info("For prefix+reparameterization, inject the embeddings in the first layer.")
                 module.prefix_input_embeds = nn.Parameter(torch.randn(self.num_prefix, self.embed_dim, device=device, dtype=self.model.dtype), requires_grad=True)
             else:
@@ -169,21 +194,3 @@ class PrefixTuning:
         else:
             module.prefix_keys = nn.Parameter(torch.randn(self.num_prefix, self.hidden_dim, device=device, dtype=self.model.dtype), requires_grad=True)
             module.prefix_values = nn.Parameter(torch.randn(self.num_prefix, self.hidden_dim, device=device, dtype=self.model.dtype), requires_grad=True)
-
-
-def test():
-    from transformers import AutoTokenizer
-    from modeling_roberta import RobertaModel
-    model = RobertaModel.from_pretrained("roberta-base")
-    tokenizer = AutoTokenizer.from_pretrained("roberta-base")
-    model.cuda()
-
-    PrefixTuning(model, num_prefix=5, reparam=False, init_by_real_act=True)
-
-    inputs = tokenizer("Hello, my dog is", return_tensors="pt").to(model.device)
-    o = model(**inputs)
-    # print(o)
-
-
-if __name__ == "__main__":
-    test()
