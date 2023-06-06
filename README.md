@@ -10,18 +10,16 @@ MeZO demonstrates comparable performance to fine-tuning with backpropagation acr
 
 <p>
   <img src="https://github.com/princeton-nlp/MeZO/blob/main/assets/fig2.png?raw=true" alt="Fig" width="100%"/>
-  <br>
-  <div style="color: gray">
+  <em>
   GPU memory usage comparison between zero-shot, in-context learning (ICL), Adam fine-tuning (FT), and our proposed MeZO.
-  </div>
+  </em>
 </p>
 
 <p>
   <img src="https://github.com/princeton-nlp/MeZO/blob/main/assets/fig1.png?raw=true" alt="Fig" width="100%"/>
-  <br>
-  <div style="color: gray">
+  <em>
   OPT-13B results with zero-shot, in-context learning (ICL), MeZO (we report the best among MeZO/MeZO (LoRA)/MeZO (prefix)), and fine-tuning with Adam (FT). MeZO demonstrates superior results over zero-shot and ICL and performs on par with FT (within 1%) on 7 out of 11 tasks, despite using only 1/12 memory.
-  </div>
+  </em>
 </p>
 
 
