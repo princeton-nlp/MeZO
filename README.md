@@ -23,9 +23,18 @@ MeZO demonstrates comparable performance to fine-tuning with backpropagation acr
 </p>
 
 
-## Outline
+## Reproduce our paper results
 
-For reproducing RoBERTa-large experiments, please refer to the `medium_models` folder. For OPT experiments, please refer to the `large_models` folder.
+For reproducing RoBERTa-large experiments, please refer to the [medium_models](https://github.com/princeton-nlp/MeZO/tree/main/medium_models) folder. For autoregressive LM (OPT) experiments, please refer to the [large_models](https://github.com/princeton-nlp/MeZO/tree/main/large_models) folder. If you want to learn more about how MeZO works and how we implement it, we recommend you to read the [large_models](https://github.com/princeton-nlp/MeZO/tree/main/large_models) folder as the implementation is clearer and more extensible. If you want to explore more variants of MeZO, we recommend trying out [medium_models](https://github.com/princeton-nlp/MeZO/tree/main/medium_models) as it's faster and has more variants implemented.
+
+## How to add MeZO to my own code?
+
+Our implementation of MeZO is based on [HuggingFace's Trainer](https://github.com/huggingface/transformers/blob/main/src/transformers/trainer.py). We add MeZO to the official implementation of trainer with minimum editing. Please refer to "How to add MeZO to my own code?" section in [large_models](https://github.com/princeton-nlp/MeZO/tree/main/large_models) README for more details.
+
+## Bugs or questions?
+
+If you have any questions related to the code or the paper, feel free to email Sadhika (`smalladi@princeton.edu`) or Tianyu (`tianyug@princeton.edu`). If you encounter any problems when using the code, or want to report a bug, you can open an issue. Please try to specify the problem with details so we can help you better and quicker!
+
 
 
 ## Citation
