@@ -108,6 +108,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser = HfArgumentParser(OurArguments)
     args = parser.parse_args_into_dataclasses()[0]
+    print(args)
     return args
 
 
