@@ -1,6 +1,6 @@
 # MeZO on Medium-sized Masked Language Models
 
-This part of the code is for MeZO experiments on RoBERTa-large.
+This part of the code is for MeZO experiments on RoBERTa-large. It is based on [LM-Kernel-FT](https://github.com/princeton-nlp/LM-Kernel-FT) and [LM-BFF](https://github.com/princeton-nlp/LM-BFF).
 
 ## Installation
 
