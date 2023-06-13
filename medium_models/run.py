@@ -18,11 +18,9 @@ from transformers import GlueDataTrainingArguments as DataTrainingArguments
 from transformers import HfArgumentParser, TrainingArguments, set_seed
 
 from src.linearhead_trainer import LinearHeadTrainer
-from src.kernel_trainer import KernelTrainerFunc
 from src.dataset import FewShotDataset, OurInputFeatures
 from src.models import MODEL_TYPES, resize_token_type_embeddings, convert_opt_model
 from src.trainer import Trainer
-from src.hessian_trainer import HessianTrainer
 from src.processors import processors_mapping, num_labels_mapping, output_modes_mapping, compute_metrics_mapping, bound_mapping
 
 from filelock import FileLock
@@ -975,8 +973,6 @@ def main():
     trainer_classes = {
         "standard": Trainer,
         "linearhead": LinearHeadTrainer,
-        "kernel": KernelTrainerFunc,
-        "hessian": HessianTrainer
     }
     trainer_class = trainer_classes[training_args.trainer]
     trainer_kwargs = {}
