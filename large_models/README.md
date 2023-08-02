@@ -45,9 +45,9 @@ MODEL=facebook/opt-1.3b TASK=SST2 MODE=lora LR=1e-4 bash finetune.sh
 MODEL=facebook/opt-13b TASK=SST2 MODE=ft LR=1e-5 NUM_GPU=4 bash finetune_fsdp.sh
 
 # MeZO (full-parameter, prefix-tuning, and LoRA)
-MODEL=facebook/opt-13b TASK=SST2 MODE=ft LR=1e-6 EPS=1e-3 bash mezo.sh
-MODEL=facebook/opt-13b TASK=SST2 MODE=prefix LR=1e-2 EPS=1e-1 bash mezo.sh
-MODEL=facebook/opt-13b TASK=SST2 MODE=lora LR=1e-4 EPS=1e-2 bash mezo.sh
+MODEL=facebook/opt-13b TASK=SST2 MODE=ft LR=1e-7 EPS=1e-3 bash mezo.sh
+MODEL=facebook/opt-13b TASK=SST2 MODE=prefix LR=1e-3 EPS=1e-1 bash mezo.sh
+MODEL=facebook/opt-13b TASK=SST2 MODE=lora LR=5e-5 EPS=1e-2 bash mezo.sh
 
 # MeZO with non-differentiable objective (SQuAD (F1) + MeZO prefix as an example)
 MODEL=facebook/opt-13b TASK=SQuAD MODE=prefix LR=1e-2 EPS=1e-1 bash mezo.sh --non_diff --evaluation_strategy no --save_strategy no --save_model
