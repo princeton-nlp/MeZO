@@ -55,6 +55,14 @@ MODEL=facebook/opt-13b TASK=SQuAD MODE=prefix LR=1e-2 EPS=1e-1 bash mezo.sh --no
 
 Note that `icl.sh` and `mezo.sh` automatically support multi-GPU usage. For fine-tuning, use `finetune_fsdp.sh` for multi-GPU training and specific `NUM_GPU`. Evaluation results (json format) and checkpoints (HuggingFace format) will be saved in `result` folder.
 
+Our recommended hyperparameter search range for OPT-13b (should also work for other sizes/models) are as follows,
+
+| MeZO methods  | LR           | EPS |
+| ------------- | ------------ | --- |
+| Full parameter  | 1e-6/1e-7 | 1e-3 |
+| Prefix-tuning  | 1e-2/1e-3 | 1e-1 |
+| LoRA  | 1e-4/5e-5  | 1e-2 |
+
 ## How to add MeZO to my own code?
 
 Our implementation of MeZO is based on [HuggingFace Trainer](https://github.com/huggingface/transformers/blob/main/src/transformers/trainer.py). We try to add MeZO to the official implementation of trainer with minimum editing. Please refer to `trainer.py` for details. We edit the `_inner_training_loop` function (to see where we edited, search `MeZO added`) to replace the original optimizer with MeZO, which contains the following operations: 
