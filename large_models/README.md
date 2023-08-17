@@ -65,7 +65,7 @@ Our recommended hyperparameter search range for OPT-13b (should also work for ot
 
 ## How to add MeZO to my own code?
 
-Our implementation of MeZO is based on [HuggingFace Trainer](https://github.com/huggingface/transformers/blob/main/src/transformers/trainer.py). We try to add MeZO to the official implementation of trainer with minimum editing. Please refer to `trainer.py` for details. We edit the `_inner_training_loop` function (to see where we edited, search `MeZO added`) to replace the original optimizer with MeZO, which contains the following operations: 
+Our implementation of MeZO is based on [HuggingFace Trainer](https://github.com/huggingface/transformers/blob/main/src/transformers/trainer.py). We try to add MeZO to the official implementation of trainer with minimum editing. Please refer to `trainer.py` for details. We edit the `_inner_training_loop` function (to see where we edited, search `MeZO added`; ignore the linear probing part) to replace the original optimizer with MeZO, which contains the following operations: 
 
 * `zo_perturb_parameters`: our in-place parameter perturbation function.
 * `zo_forward` and `zo_forward_nondiff`: get loss value (differentiable/non-differentiable).
