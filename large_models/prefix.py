@@ -117,6 +117,10 @@ class PrefixTuning:
             attention_name = "attention"
             first_layer_name = "layer.0"
             layer_name = "layer."
+        elif model.config.model_type == "llama":
+            attention_name = "self_attn"
+            first_layer_name = "layers.0"
+            layer_name = "layers."
         else:
             raise NotImplementedError
 
@@ -126,7 +130,7 @@ class PrefixTuning:
 
             # Randomly sample input tokens
             input_tokens = torch.randint(low=0, high=model.config.vocab_size, size=(1, num_prefix), dtype=torch.long).cuda()
-            if model.config.model_type == "opt":
+            if model.config.model_type in ["opt", "llama"]:
                 with torch.no_grad():
                     # Get the real activations
                     real_key_values = model(input_ids=input_tokens, use_cache=True).past_key_values

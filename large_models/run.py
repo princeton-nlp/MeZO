@@ -174,6 +174,10 @@ class Framework:
         # HF tokenizer bug fix
         if "opt" in self.args.model_name:
             tokenizer.bos_token_id = 0
+        
+        if "llama" in self.args.model_name:
+            # LLaMA padding token
+            tokenizer.pad_token_id = 0 # technically <unk>
 
         # Prefix tuning/LoRA
         if self.args.prefix_tuning:
@@ -211,7 +215,7 @@ class Framework:
             outputs = self.model.generate(
                 input_ids, do_sample=args.sampling, temperature=args.temperature, 
                 num_beams=args.num_beams, top_p=args.top_p, top_k=args.top_k, max_new_tokens=min(args.max_new_tokens, args.max_length - input_ids.size(1)), 
-                num_return_sequences=1, eos_token_id=[self.tokenizer.encode(args.eos_token, add_special_tokens=False)[0], self.tokenizer.eos_token_id],
+                num_return_sequences=1, eos_token_id=[self.tokenizer.encode(args.eos_token, add_special_tokens=False)[-1], self.tokenizer.eos_token_id],
             )
             # For generation, directly return the text output
             output_text = self.tokenizer.decode(outputs[0][input_ids.size(1):], skip_special_tokens=True).strip()

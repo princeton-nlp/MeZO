@@ -744,7 +744,7 @@ class OurTrainer(Trainer):
             outputs = self.model.generate(
                 inputs["input_ids"], do_sample=args.sampling, temperature=args.temperature, 
                 num_beams=args.num_beams, top_p=args.top_p, top_k=args.top_k, max_new_tokens=min(args.max_new_tokens, args.max_length - inputs["input_ids"].size(1)), 
-                num_return_sequences=1, eos_token_id=[self.tokenizer.encode(args.eos_token, add_special_tokens=False)[0], self.tokenizer.eos_token_id],
+                num_return_sequences=1, eos_token_id=[self.tokenizer.encode(args.eos_token, add_special_tokens=False)[-1], self.tokenizer.eos_token_id],
             )
             output_text = []
             for i in range(len(outputs)):
