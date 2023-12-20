@@ -1,7 +1,7 @@
+from typing import Callable, TypeVar
+
 import torch
-from torch import nn, Tensor, Parameter
-from typing import Callable, TypeVar, Sequence
-from torch import Generator
+from torch import Generator, Tensor, nn
 
 InputType = TypeVar("InputType")
 ModelType = TypeVar("ModelType", bound=nn.Module)
@@ -80,28 +80,33 @@ def update_param(
     projected_grad: Tensor | float,
     extra_coefficient: float = 1.0,
     max_params_at_a_time: int | None = 100_000,
-):
+) -> None:
     """Updates a parameter in-place using the coefficients and the projected grad value.
 
-    IDEA: Split up the update, doing it row by row instead, whenever the weight is too large.
-    This is to save some GPU memory.
-
-    NOTE: The RNG should still be fine, because the same number of samples are drawn every time for
-    that particular weight.
+    Parameters
+    ----------
+    param: the parameter tensor to update in-place.
+    rng_gen: Torch random number generator
+    learning_rate: learning rate for the update
+    projected_grad: The projected gradient computed as the (loss_pos - loss_neg) / (2 * epsilon)
+    extra_coefficient: An extra coefficient applied to the update. Useful when averaging updates.
+    max_params_at_a_time: Maximum number of parameters to update at a time, to limit the GPU \
+        memory usage.
     """
     if max_params_at_a_time is None or param.numel() <= max_params_at_a_time:
-        param.subtract_(
-            extra_coefficient
-            * learning_rate
-            * projected_grad
-            * torch.randn(  # z
-                param.shape,
-                dtype=param.dtype,
-                device=param.device,
-                generator=rng_gen,
-            )
+        z = torch.randn(
+            param.shape,
+            dtype=param.dtype,
+            device=param.device,
+            generator=rng_gen,
         )
+        param.data.subtract_(extra_coefficient * learning_rate * projected_grad * z)
     else:
+        # IDEA: Split up the update, doing it row by row instead, whenever the weight is too large.
+        # This is to save some GPU memory.
+
+        # NOTE: The RNG should still be fine, because the same number of samples are drawn every
+        # time for that particular weight.
         for param_row in param:
             update_param(
                 param_row,
@@ -118,12 +123,11 @@ def reconstruct_mezo_updates(
     random_seeds: list[int],
     projected_grads: list[Tensor],
     learning_rates: list[float],
-):
+) -> None:
     """Recover the final weights given the projected grads and the random seeds at each step."""
     device = get_device(model)
     rng_generators = [
-        torch.Generator(device=device).manual_seed(random_seed)
-        for random_seed in random_seeds
+        torch.Generator(device=device).manual_seed(random_seed) for random_seed in random_seeds
     ]
     for param in model.parameters():
         for learning_rate, projected_grad, rng_gen in zip(
@@ -142,14 +146,14 @@ def average_of_mezo_updates(
     random_seeds: list[int],
     projected_grads: list[Tensor],
     learning_rates: list[float],
-):
-    """Given the projected grads and the random seeds, perform an update with the average of the
-    updates for each worker.
+) -> None:
+    """Perform the average of multiple MeZO updates given the projected grads and the random seeds.
+
+    This is useful for the distributed implementation of MeZO.
     """
     device = get_device(model)
     rng_generators = [
-        torch.Generator(device=device).manual_seed(random_seed)
-        for random_seed in random_seeds
+        torch.Generator(device=device).manual_seed(random_seed) for random_seed in random_seeds
     ]
     N = len(random_seeds)
     assert len(random_seeds) == len(projected_grads) == len(learning_rates)
@@ -164,6 +168,16 @@ def average_of_mezo_updates(
                 projected_grad=projected_grad,
                 extra_coefficient=1 / N,
             )
+
+
+def get_random_seeds(base_random_seed: int, num_seeds: int) -> list[int]:
+    """Returns a sequence of integers to be used as random seeds for each worker or step."""
+    return torch.randint(
+        0,
+        int(1e8),
+        (num_seeds,),
+        generator=torch.Generator().manual_seed(base_random_seed),
+    ).tolist()
 
 
 def get_device(model: nn.Module) -> torch.device:

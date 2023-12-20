@@ -1,0 +1,87 @@
+default_language_version:
+  python: python3
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      # list of supported hooks: https://pre-commit.com/hooks.html
+      - id: trailing-whitespace
+        require_serial: true
+      - id: end-of-file-fixer
+        require_serial: true
+        # Exclude any .txt or .md files anywhere in the 'tests' directory:
+        exclude: ^tests/.*\.(txt|md)$
+      # - id: check-docstring-first
+      - id: check-yaml
+        require_serial: true
+      - id: debug-statements
+        require_serial: true
+      - id: detect-private-key
+        require_serial: true
+      - id: check-executables-have-shebangs
+        require_serial: true
+      - id: check-toml
+        require_serial: true
+      - id: check-case-conflict
+        require_serial: true
+      - id: check-added-large-files
+        require_serial: true
+
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    # Ruff version.
+    rev: "v0.0.261"
+    hooks:
+      - id: ruff
+        # args: ["--line-length", "88", "--fix"]
+        args: ["--line-length", "99", "--fix"]
+        require_serial: true
+
+  # - repo: https://github.com/pycqa/isort
+  #   rev: 5.12.0
+  #   hooks:
+  #     - id: isort
+  #       name: isort (python)
+
+  # python code formatting
+  - repo: https://github.com/psf/black
+    rev: 22.12.0
+    hooks:
+      - id: black
+        args: [--line-length, "99"]
+        require_serial: true
+
+  # python docstring formatting
+  - repo: https://github.com/myint/docformatter
+    rev: v1.5.1
+    hooks:
+      - id: docformatter
+        args: [--in-place, --wrap-summaries=99, --wrap-descriptions=99]
+        # args: [--in-place, --wrap-summaries=88, --wrap-descriptions=88]
+        require_serial: true
+
+  # md formatting
+  # NOTE: Disabling, since it wants to change the markdown regression files with escaped
+  # characters.
+  # - repo: https://github.com/executablebooks/mdformat
+  #   rev: 0.7.16
+  #   hooks:
+  #     - id: mdformat
+  #       args: ["--number"]
+  #       additional_dependencies:
+  #         - mdformat-gfm
+  #         - mdformat-tables
+  #         - mdformat_frontmatter
+  #         # - mdformat-toc
+  #         # - mdformat-black
+  #       require_serial: true
+
+  # word spelling linter
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.2.2
+    hooks:
+      - id: codespell
+        args:
+          - --skip=logs/**,data/**
+          # - --ignore-words-list=abc,def
+        require_serial: true

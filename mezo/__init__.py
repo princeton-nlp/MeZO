@@ -1,13 +1,15 @@
-from .simple_impl import (
-    mezo_update_step,
-    reconstruct_mezo_updates,
+from .distributed_mezo import distributed_mezo_update
+from .mezo import (
     average_of_mezo_updates,
+    mezo_update_step,
     perturb_parameters,
+    reconstruct_mezo_updates,
 )
 
 __all__ = [
-    "mezo_update_step",
-    "reconstruct_mezo_updates",
+    "distributed_mezo_update",
     "average_of_mezo_updates",
+    "mezo_update_step",
     "perturb_parameters",
+    "reconstruct_mezo_updates",
 ]
