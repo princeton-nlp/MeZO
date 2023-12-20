@@ -29,13 +29,13 @@ def distributed_mezo_update(
 ):
     is_master = torch.distributed.get_rank() == 0
     world_size = torch.distributed.get_world_size()
+    raise NotImplementedError("TODO")
 
     if is_master:
         # Create and broadcast the random seeds to be used by each worker.
         random_seeds = torch.arange(random_seed, random_seed + world_size)
         torch.distributed.broadcast(random_seeds, src=0)
     else:
-        # random_seed =
         ...
 
     perturb_parameters(model, epsilon, random_seed)
