@@ -1,4 +1,4 @@
-from .distributed_mezo import distributed_mezo_update
+from .distributed import distributed_mezo_update
 from .mezo import (
     average_of_mezo_updates,
     get_random_seeds,

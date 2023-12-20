@@ -13,9 +13,6 @@ from .mezo import (
     perturb_parameters,
 )
 
-# To read (according to David 'Yohan(?)') Self-Align, limitations of prompt-tuning.
-# Improving language plasticity with selective forgetting
-
 logger = get_logger(__name__)
 
 
@@ -27,7 +24,6 @@ def distributed_mezo_update(
     learning_rate: float,
     base_random_seed: int,
 ):
-    logger.debug(f"inputs: {inputs}")
     rank = torch.distributed.get_rank()
     world_size = torch.distributed.get_world_size()
 
@@ -35,7 +31,7 @@ def distributed_mezo_update(
     learning_rates = [learning_rate for _ in range(world_size)]
 
     random_seed = random_seeds[rank]
-    logger.debug(f"Random seed: {random_seed}")
+    logger.debug(f"Worker {rank} will use random seed of {random_seed}")
 
     perturb_parameters(model, epsilon, random_seed)
 
@@ -51,13 +47,16 @@ def distributed_mezo_update(
     perturb_parameters(model, epsilon, random_seed)
 
     projected_grad = (loss_pos - loss_neg) / (2 * epsilon)
-    logger.debug(f"(local) projected gradient: {projected_grad}")
+    logger.debug(f"Worker {rank}: local projected gradient: {projected_grad}")
 
     assert isinstance(projected_grad, Tensor)
     # list of Placeholder tensors, will be filled with the projected gradient from each worker.
-    projected_grads: list[Tensor] = [torch.zeros_like(projected_grad) for _ in range(world_size)]
+    projected_grads: list[Tensor] = [
+        torch.zeros_like(projected_grad) for _ in range(world_size)
+    ]
     torch.distributed.all_gather(projected_grads, projected_grad)
-    logger.debug(f"Projected gradients: {projected_grads}")
+    if rank == 0:
+        logger.debug(f"Projected gradients: {projected_grads}")
 
     average_of_mezo_updates(
         model,
