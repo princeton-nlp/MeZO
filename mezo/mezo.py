@@ -7,7 +7,7 @@ InputType = TypeVar("InputType")
 ModuleType = TypeVar("ModuleType", bound=nn.Module)
 
 
-def mezo_update_step(
+def mezo_update(
     model: ModuleType,
     inputs: InputType,
     loss_function: Callable[[ModuleType, InputType], Tensor],
