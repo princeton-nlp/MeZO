@@ -4,13 +4,13 @@ import torch
 from torch import Generator, Tensor, nn
 
 InputType = TypeVar("InputType")
-ModelType = TypeVar("ModelType", bound=nn.Module)
+ModuleType = TypeVar("ModuleType", bound=nn.Module)
 
 
 def mezo_update_step(
-    model: ModelType,
+    model: ModuleType,
     inputs: InputType,
-    loss_function: Callable[[ModelType, InputType], Tensor],
+    loss_function: Callable[[ModuleType, InputType], Tensor],
     epsilon: float,
     learning_rate: float,
     random_seed: int,
@@ -151,12 +151,13 @@ def average_of_mezo_updates(
 
     This is useful for the distributed implementation of MeZO.
     """
+    assert len(random_seeds) == len(projected_grads) == len(learning_rates)
+    N = len(random_seeds)
+
     device = get_device(model)
     rng_generators = [
         torch.Generator(device=device).manual_seed(random_seed) for random_seed in random_seeds
     ]
-    N = len(random_seeds)
-    assert len(random_seeds) == len(projected_grads) == len(learning_rates)
     for param in model.parameters():
         for learning_rate, projected_grad, rng_gen in zip(
             learning_rates, projected_grads, rng_generators

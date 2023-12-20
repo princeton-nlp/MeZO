@@ -5,62 +5,27 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Callable
 
-import numpy as np
 import pytest
 import torch
 import torch.distributed
 from torch import Tensor, nn
 
-from mezo import mezo_update_step
-from mezo.distributed_mezo import distributed_mezo_update
-from mezo.mezo import ModelType, get_random_seeds
+from mezo import (
+    mezo_update_step,
+    average_of_mezo_updates,
+    get_random_seeds,
+    distributed_mezo_update,
+)
+from mezo.mezo import ModuleType
+from .conftest import loss_function
 
-
-@pytest.fixture
-def seed():
-    return 42
-
-
-@pytest.fixture
-def device() -> torch.device:
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-@pytest.fixture
-def inputs(device: torch.device, seed: int) -> Tensor:
-    batch_size = 32
-    return torch.randn(
-        batch_size,
-        10,
-        generator=torch.Generator(device).manual_seed(seed),
-        device=device,
-    )
-
-
-@pytest.fixture
-def model(device: torch.device, inputs: Tensor, seed: int):
-    dims = int(np.prod(inputs.shape[1:]))
-    with torch.random.fork_rng(devices=[device]):
-        torch.manual_seed(seed)
-        model = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(dims, 16, device=device),
-            nn.Tanh(),
-            nn.Linear(16, dims, device=device),
-        )
-        model(inputs)  # instantiate weights.
-    return model
-
-
-def loss_function(model: nn.Module, inputs: torch.Tensor) -> Tensor:
-    # Simple dumb reconstruction loss.
-    return torch.nn.functional.mse_loss(model(inputs), inputs)
+logger = logging.getLogger(__name__)
 
 
 def run_single_distributed_update_and_save_resulting_weights(
-    model: ModelType,
+    model: ModuleType,
     inputs: Tensor,
-    loss_function: Callable[[ModelType, Tensor], Tensor],
+    loss_function: Callable[[ModuleType, Tensor], Tensor],
     epsilon: float,
     learning_rate: float,
     base_random_seed: int,
@@ -72,6 +37,10 @@ def run_single_distributed_update_and_save_resulting_weights(
 
     Performs a single update step, then writes the resulting weights to the given path.
     """
+
+    # just to make sure that we're not modifying any shared weight in any way.
+    model.load_state_dict(copy.deepcopy(model.state_dict()))
+
     logging.basicConfig(
         level=logging.DEBUG,
         format=f"[{rank+1}/{world_size}] " + "%(asctime)s %(levelname)s %(message)s",
@@ -80,20 +49,20 @@ def run_single_distributed_update_and_save_resulting_weights(
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "12323"
     logger = logging.getLogger(__name__)
-    logger.info(f"Initializing the process group in worker {rank+1}/{world_size}")
 
     device_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+    device = torch.device(
+        f"cuda:{rank % torch.cuda.device_count()}" if torch.cuda.is_available() else "cpu"
+    )
+
+    logger.info(f"Initializing the process group in worker {rank+1}/{world_size}")
     torch.distributed.init_process_group(
+        # NOTE: nccl doesn't allow multiple workers on the same GPU.
         backend="gloo" if world_size > device_count else "nccl",
         init_method="env://",
         timeout=timedelta(seconds=30),
         rank=rank,
         world_size=world_size,
-    )
-    logger.info(f"Done initializing the process group in worker {rank+1}/{world_size}")
-
-    device = torch.device(
-        f"cuda:{rank % torch.cuda.device_count()}" if torch.cuda.is_available() else "cpu"
     )
     logger.info(f"Done initializing the process group in worker {rank+1}/{world_size}")
 
@@ -123,29 +92,28 @@ def test_distributed_mezo(
     inputs: Tensor,
     seed: int,
     tmp_path: Path,
-    device: torch.device,
     n_workers: int,
 ):
     """IDEA: Create two processes, make each of them run a single step of distributed_mezo_update.
 
     - check that have the same weights at the end.
+    - check that this final weight is the average of the weights if each update had been done
+      separately.
     """
     initial_weights = copy.deepcopy(model.state_dict())  # save for later.
-    # model = model.to("cpu")
-    # inputs = inputs.to("cpu")
 
     epsilon: float = 0.1
     learning_rate: float = 0.1
 
     processes: list[torch.multiprocessing.Process] = []
+
     # Slightly change the inputs between workers to simulate different batches.
     worker_inputs = [inputs.clone() + rank for rank in range(n_workers)]
-    # worker_seeds = [seed + rank for rank in range(n_workers)]
     worker_final_weights_paths = [
         tmp_path / f"worker_{rank}_final_weights.pth" for rank in range(n_workers)
     ]
 
-    torch.multiprocessing.set_start_method("forkserver")
+    torch.multiprocessing.set_start_method("spawn")
 
     base_seed = seed
 
@@ -155,7 +123,7 @@ def test_distributed_mezo(
         process = torch.multiprocessing.Process(
             target=run_single_distributed_update_and_save_resulting_weights,
             kwargs=dict(
-                model=model,
+                model=copy.deepcopy(model),
                 inputs=worker_input,
                 loss_function=loss_function,
                 epsilon=epsilon,
@@ -182,19 +150,21 @@ def test_distributed_mezo(
     # Check that all workers ended up with the same weights at the end:
     assert worker_final_weights_paths[0].exists()
     first_worker_final_weights = torch.load(worker_final_weights_paths[0])
+    # Each worker has the same final weight.
     for final_weights_path in worker_final_weights_paths[1:]:
         assert final_weights_path.exists()
         worker_final_weights = torch.load(final_weights_path)
         torch.testing.assert_close(worker_final_weights, first_worker_final_weights)
 
-    # Check that this final weight is indeed the average of the weights of all workers.
-    new_weights_list: list[dict[str, Tensor]] = []
+    # Check that the final weights are indeed the average of the updates from each worker.
+    projected_grads: list[Tensor] = []
 
-    for rank, (worker_input, worker_seed) in enumerate(
-        zip(worker_inputs, get_random_seeds(base_seed, num_seeds=n_workers))
-    ):
+    random_seeds = get_random_seeds(base_seed, num_seeds=n_workers)
+    logger.info(f"Random seeds: {random_seeds}")
+    weights_after_each_worker_update: list[dict[str, Tensor]] = []
+    for rank, (worker_input, worker_seed) in enumerate(zip(worker_inputs, random_seeds)):
         model.load_state_dict(initial_weights)
-        mezo_update_step(
+        worker_projected_grad = mezo_update_step(
             model,
             worker_input,
             loss_function,
@@ -202,11 +172,24 @@ def test_distributed_mezo(
             learning_rate=learning_rate,
             random_seed=worker_seed,
         )
-        new_weights_list.append(copy.deepcopy(model.state_dict()))
+        projected_grads.append(worker_projected_grad)
+        weights_after_each_worker_update.append(copy.deepcopy(model.state_dict()))
 
+    # Manually check that it matches the average of the weights if each update had been done
+    # separately.
     average_of_weights = {
-        key: torch.mean(torch.stack([w[key] for w in new_weights_list]), dim=0)
-        for key in new_weights_list[0].keys()
+        key: torch.mean(torch.stack([w[key] for w in weights_after_each_worker_update]), dim=0)
+        for key in weights_after_each_worker_update[0].keys()
     }
-
     torch.testing.assert_close(first_worker_final_weights, average_of_weights)
+
+    # Same check, but using the `average_of_mezo_updates` function.
+    # NOTE: There's also a separate test for that function.
+    model.load_state_dict(initial_weights)
+    average_of_mezo_updates(
+        model,
+        random_seeds=random_seeds,
+        projected_grads=projected_grads,
+        learning_rates=[learning_rate for _ in range(n_workers)],
+    )
+    torch.testing.assert_close(first_worker_final_weights, model.state_dict())
