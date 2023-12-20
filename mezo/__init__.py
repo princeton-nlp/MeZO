@@ -1,17 +1,17 @@
 from .distributed import distributed_mezo_update
 from .mezo import (
-    average_of_mezo_updates,
+    average_of_updates,
     get_random_seeds,
-    mezo_update,
+    update,
     perturb_parameters,
-    reconstruct_mezo_updates,
+    reconstruct_updates,
 )
 
 __all__ = [
     "distributed_mezo_update",
-    "average_of_mezo_updates",
+    "average_of_updates",
     "get_random_seeds",
-    "mezo_update",
+    "update",
     "perturb_parameters",
-    "reconstruct_mezo_updates",
+    "reconstruct_updates",
 ]

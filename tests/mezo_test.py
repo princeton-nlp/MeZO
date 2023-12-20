@@ -4,7 +4,7 @@ import torch
 import torch.distributed
 from torch import Tensor, nn
 
-from mezo import mezo_update, reconstruct_mezo_updates, average_of_mezo_updates
+from mezo import update, reconstruct_updates, average_of_updates
 from .conftest import loss_function
 
 
@@ -14,7 +14,7 @@ def test_mezo_update_step_reproducible(model: nn.Module, inputs: torch.Tensor, s
 
     initial_model_weights = copy.deepcopy(model.state_dict())
 
-    projected_grad = mezo_update(
+    projected_grad = update(
         model,
         inputs,
         loss_function,
@@ -31,7 +31,7 @@ def test_mezo_update_step_reproducible(model: nn.Module, inputs: torch.Tensor, s
     # Reset the model weights.
     model.load_state_dict(initial_model_weights)
 
-    same_projected_grad = mezo_update(
+    same_projected_grad = update(
         model,
         inputs,
         loss_function,
@@ -47,7 +47,7 @@ def test_mezo_update_step_reproducible(model: nn.Module, inputs: torch.Tensor, s
     model.load_state_dict(initial_model_weights)
 
     # Different random seed should lead to different weights.
-    other_projected_grad = mezo_update(
+    other_projected_grad = update(
         model,
         inputs,
         loss_function,
@@ -74,7 +74,7 @@ def test_reconstruct_mezo_updates(model: nn.Module, inputs: Tensor, seed: int):
 
     initial_weights = copy.deepcopy(model.state_dict())
     for step, seed in enumerate(random_seeds):
-        projected_grad = mezo_update(
+        projected_grad = update(
             model,
             inputs,  # use same inputs for each step, but it could also change, doesn't matter.
             loss_function,
@@ -88,7 +88,7 @@ def test_reconstruct_mezo_updates(model: nn.Module, inputs: Tensor, seed: int):
 
     model.load_state_dict(initial_weights)
 
-    reconstruct_mezo_updates(
+    reconstruct_updates(
         model,
         random_seeds=random_seeds,
         projected_grads=projected_grads,
@@ -115,7 +115,7 @@ def test_average_of_mezo_updates(model: nn.Module, inputs: Tensor, seed: int):
     for seed in random_seeds:
         # NOTE: Use `assign=False` explicitly just to make sure we don't change the initial weights
         model.load_state_dict(initial_weights, assign=False)
-        projected_grad = mezo_update(
+        projected_grad = update(
             model,
             inputs,  # using the same input for each step but it could also change, doesn't matter.
             loss_function,
@@ -134,7 +134,7 @@ def test_average_of_mezo_updates(model: nn.Module, inputs: Tensor, seed: int):
     }
 
     model.load_state_dict(initial_weights)
-    average_of_mezo_updates(
+    average_of_updates(
         model,
         random_seeds=random_seeds,
         projected_grads=projected_grads,

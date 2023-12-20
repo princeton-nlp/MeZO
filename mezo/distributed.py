@@ -8,7 +8,7 @@ from torch import Tensor
 from .mezo import (
     InputType,
     ModuleType,
-    average_of_mezo_updates,
+    average_of_updates,
     get_random_seeds,
     perturb_parameters,
 )
@@ -51,14 +51,12 @@ def distributed_mezo_update(
 
     assert isinstance(projected_grad, Tensor)
     # list of Placeholder tensors, will be filled with the projected gradient from each worker.
-    projected_grads: list[Tensor] = [
-        torch.zeros_like(projected_grad) for _ in range(world_size)
-    ]
+    projected_grads: list[Tensor] = [torch.zeros_like(projected_grad) for _ in range(world_size)]
     torch.distributed.all_gather(projected_grads, projected_grad)
     if rank == 0:
         logger.debug(f"Projected gradients: {projected_grads}")
 
-    average_of_mezo_updates(
+    average_of_updates(
         model,
         random_seeds=random_seeds,
         projected_grads=projected_grads,

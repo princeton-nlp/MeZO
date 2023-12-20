@@ -11,8 +11,8 @@ import torch.distributed
 from torch import Tensor, nn
 
 from mezo import (
-    mezo_update,
-    average_of_mezo_updates,
+    update,
+    average_of_updates,
     get_random_seeds,
     distributed_mezo_update,
 )
@@ -164,7 +164,7 @@ def test_distributed_mezo(
     weights_after_each_worker_update: list[dict[str, Tensor]] = []
     for rank, (worker_input, worker_seed) in enumerate(zip(worker_inputs, random_seeds)):
         model.load_state_dict(initial_weights)
-        worker_projected_grad = mezo_update(
+        worker_projected_grad = update(
             model,
             worker_input,
             loss_function,
@@ -186,7 +186,7 @@ def test_distributed_mezo(
     # Same check, but using the `average_of_mezo_updates` function.
     # NOTE: There's also a separate test for that function.
     model.load_state_dict(initial_weights)
-    average_of_mezo_updates(
+    average_of_updates(
         model,
         random_seeds=random_seeds,
         projected_grads=projected_grads,

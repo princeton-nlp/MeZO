@@ -7,7 +7,7 @@ InputType = TypeVar("InputType")
 ModuleType = TypeVar("ModuleType", bound=nn.Module)
 
 
-def mezo_update(
+def update(
     model: ModuleType,
     inputs: InputType,
     loss_function: Callable[[ModuleType, InputType], Tensor],
@@ -118,7 +118,7 @@ def update_param(
             )
 
 
-def reconstruct_mezo_updates(
+def reconstruct_updates(
     model: nn.Module,
     random_seeds: list[int],
     projected_grads: list[Tensor],
@@ -141,7 +141,7 @@ def reconstruct_mezo_updates(
             )
 
 
-def average_of_mezo_updates(
+def average_of_updates(
     model: nn.Module,
     random_seeds: list[int],
     projected_grads: list[Tensor],
