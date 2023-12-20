@@ -37,12 +37,6 @@ repos:
         args: ["--line-length", "99", "--fix"]
         require_serial: true
 
-  # - repo: https://github.com/pycqa/isort
-  #   rev: 5.12.0
-  #   hooks:
-  #     - id: isort
-  #       name: isort (python)
-
   # python code formatting
   - repo: https://github.com/psf/black
     rev: 22.12.0
@@ -59,22 +53,6 @@ repos:
         args: [--in-place, --wrap-summaries=99, --wrap-descriptions=99]
         # args: [--in-place, --wrap-summaries=88, --wrap-descriptions=88]
         require_serial: true
-
-  # md formatting
-  # NOTE: Disabling, since it wants to change the markdown regression files with escaped
-  # characters.
-  # - repo: https://github.com/executablebooks/mdformat
-  #   rev: 0.7.16
-  #   hooks:
-  #     - id: mdformat
-  #       args: ["--number"]
-  #       additional_dependencies:
-  #         - mdformat-gfm
-  #         - mdformat-tables
-  #         - mdformat_frontmatter
-  #         # - mdformat-toc
-  #         # - mdformat-black
-  #       require_serial: true
 
   # word spelling linter
   - repo: https://github.com/codespell-project/codespell
