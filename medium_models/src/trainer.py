@@ -721,7 +721,7 @@ class Trainer(LinearHeadTrainer):
                                 z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
                             else:
                                 z = random_vector[name]
-                            param.data = param.data - self.args.learning_rate * projected_grad * z 
+                            param.data = param.data - self.args.learning_rate * (projected_grad * z + self.args.weight_decay * param.data)
 
                         if (self.args.logging_steps > 0 and self.state.global_step % self.args.logging_steps == 0) or (
                                 self.state.global_step == 1 and self.args.logging_first_step
