@@ -1,10 +1,14 @@
-from typing import Callable, TypeVar
+from typing import Callable, Iterable, TypeVar
 
 import torch
 from torch import Generator, Tensor, nn
 
 InputType = TypeVar("InputType")
 ModuleType = TypeVar("ModuleType", bound=nn.Module)
+
+
+def learnable_parameters(model: nn.Module) -> Iterable[Tensor]:
+    return (p for p in model.parameters() if p.requires_grad)
 
 
 def update(
@@ -14,13 +18,14 @@ def update(
     epsilon: float,
     learning_rate: float,
     random_seed: int,
+    learnable_parameters: Callable[[ModuleType], Iterable[Tensor]] = learnable_parameters,
 ) -> Tensor:
-    perturb_parameters(model, epsilon, random_seed)
+    perturb_parameters(learnable_parameters(model), epsilon, random_seed)
 
     with torch.no_grad():
         loss_pos = loss_function(model, inputs)
 
-    perturb_parameters(model, -2 * epsilon, random_seed)
+    perturb_parameters(learnable_parameters(model), -2 * epsilon, random_seed)
 
     with torch.no_grad():
         loss_neg = loss_function(model, inputs)
@@ -28,10 +33,10 @@ def update(
     projected_grad = (loss_pos - loss_neg) / (2 * epsilon)
 
     # reset the model parameters
-    perturb_parameters(model, epsilon, random_seed)
+    perturb_parameters(learnable_parameters(model), epsilon, random_seed)
 
     update_params(
-        model,
+        learnable_parameters(model),
         random_seed=random_seed,
         projected_grad=projected_grad,
         learning_rate=learning_rate,
@@ -39,10 +44,14 @@ def update(
     return projected_grad
 
 
-def perturb_parameters(model: nn.Module, epsilon: float, rng_seed: int) -> None:
-    device = get_device(model)
-    rng_gen = torch.Generator(device=device).manual_seed(rng_seed)
-    for param in model.parameters():
+def perturb_parameters(parameters: Iterable[Tensor], epsilon: float, rng_seed: int) -> None:
+    device: torch.device | None = None
+    rng_gen: torch.Generator | None = None
+    for param in parameters:
+        if device is None:
+            device = param.device
+        if rng_gen is None:
+            rng_gen = torch.Generator(device=device).manual_seed(rng_seed)
         param.data.add_(
             epsilon
             * torch.randn(
@@ -55,15 +64,19 @@ def perturb_parameters(model: nn.Module, epsilon: float, rng_seed: int) -> None:
 
 
 def update_params(
-    model: nn.Module,
+    parameters: Iterable[Tensor],
     random_seed: int,
     learning_rate: float,
     projected_grad: Tensor,
 ):
     """Update the parameters using the projected gradient and the random seed."""
-    device = get_device(model)
-    rng_gen = torch.Generator(device=device).manual_seed(random_seed)
-    for param in model.parameters():
+    device: torch.device | None = None
+    rng_gen: torch.Generator | None = None
+    for param in parameters:
+        if device is None:
+            device = param.device
+        if rng_gen is None:
+            rng_gen = torch.Generator(device=device).manual_seed(random_seed)
         update_param(
             param,
             rng_gen=rng_gen,
@@ -119,17 +132,23 @@ def update_param(
 
 
 def reconstruct_updates(
-    model: nn.Module,
+    model: ModuleType,
     random_seeds: list[int],
     projected_grads: list[Tensor],
     learning_rates: list[float],
+    learnable_parameters: Callable[[ModuleType], Iterable[Tensor]] = learnable_parameters,
 ) -> None:
     """Recover the final weights given the projected grads and the random seeds at each step."""
-    device = get_device(model)
-    rng_generators = [
-        torch.Generator(device=device).manual_seed(random_seed) for random_seed in random_seeds
-    ]
-    for param in model.parameters():
+    device: torch.device | None = None
+    rng_generators: list[torch.Generator] | None = None
+    for param in learnable_parameters(model):
+        if device is None or rng_generators is None:
+            device = param.device
+            rng_generators = [
+                torch.Generator(device=device).manual_seed(random_seed)
+                for random_seed in random_seeds
+            ]
+
         for learning_rate, projected_grad, rng_gen in zip(
             learning_rates, projected_grads, rng_generators
         ):
@@ -142,10 +161,11 @@ def reconstruct_updates(
 
 
 def average_of_updates(
-    model: nn.Module,
+    model: ModuleType,
     random_seeds: list[int],
     projected_grads: list[Tensor],
     learning_rates: list[float],
+    learnable_parameters: Callable[[ModuleType], Iterable[Tensor]] = learnable_parameters,
 ) -> None:
     """Perform the average of multiple MeZO updates given the projected grads and the random seeds.
 
@@ -154,11 +174,16 @@ def average_of_updates(
     assert len(random_seeds) == len(projected_grads) == len(learning_rates)
     N = len(random_seeds)
 
-    device = get_device(model)
-    rng_generators = [
-        torch.Generator(device=device).manual_seed(random_seed) for random_seed in random_seeds
-    ]
-    for param in model.parameters():
+    device: torch.device | None = None
+    rng_generators: list[torch.Generator] | None = None
+    for param in learnable_parameters(model):
+        if device is None or rng_generators is None:
+            device = param.device
+            rng_generators = [
+                torch.Generator(device=device).manual_seed(random_seed)
+                for random_seed in random_seeds
+            ]
+
         for learning_rate, projected_grad, rng_gen in zip(
             learning_rates, projected_grads, rng_generators
         ):
@@ -179,7 +204,3 @@ def get_random_seeds(base_random_seed: int, num_seeds: int) -> list[int]:
         (num_seeds,),
         generator=torch.Generator().manual_seed(base_random_seed),
     ).tolist()
-
-
-def get_device(model: nn.Module) -> torch.device:
-    return next(model.parameters()).device

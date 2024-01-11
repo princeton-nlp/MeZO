@@ -1,5 +1,5 @@
 from logging import getLogger as get_logger
-from typing import Callable
+from typing import Callable, Iterable
 
 import torch
 import torch.distributed
@@ -11,6 +11,7 @@ from .mezo import (
     average_of_updates,
     get_random_seeds,
     perturb_parameters,
+    learnable_parameters,
 )
 
 logger = get_logger(__name__)
@@ -23,7 +24,8 @@ def distributed_mezo_update(
     epsilon: float,
     learning_rate: float,
     base_random_seed: int,
-):
+    learnable_parameters: Callable[[ModuleType], Iterable[Tensor]] = learnable_parameters,
+) -> None:
     rank = torch.distributed.get_rank()
     world_size = torch.distributed.get_world_size()
 
@@ -33,18 +35,18 @@ def distributed_mezo_update(
     random_seed = random_seeds[rank]
     logger.debug(f"Worker {rank} will use random seed of {random_seed}")
 
-    perturb_parameters(model, epsilon, random_seed)
+    perturb_parameters(learnable_parameters(model), epsilon, random_seed)
 
     with torch.no_grad():
         loss_pos = loss_function(model, inputs)
 
-    perturb_parameters(model, -2 * epsilon, random_seed)
+    perturb_parameters(learnable_parameters(model), -2 * epsilon, random_seed)
 
     with torch.no_grad():
         loss_neg = loss_function(model, inputs)
 
     # Reset weights to their original value.
-    perturb_parameters(model, epsilon, random_seed)
+    perturb_parameters(learnable_parameters(model), epsilon, random_seed)
 
     projected_grad = (loss_pos - loss_neg) / (2 * epsilon)
     logger.debug(f"Worker {rank}: local projected gradient: {projected_grad}")

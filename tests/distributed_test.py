@@ -3,7 +3,8 @@ import logging
 import os
 from datetime import timedelta
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
+from typing_extensions import ParamSpec
 
 import pytest
 import torch
@@ -120,20 +121,17 @@ def test_distributed_mezo(
     for rank, (worker_input, worker_final_weights_path) in enumerate(
         zip(worker_inputs, worker_final_weights_paths)
     ):
-        process = torch.multiprocessing.Process(
-            target=run_single_distributed_update_and_save_resulting_weights,
-            kwargs=dict(
-                model=copy.deepcopy(model),
-                inputs=worker_input,
-                loss_function=loss_function,
-                epsilon=epsilon,
-                learning_rate=learning_rate,
-                base_random_seed=base_seed,
-                rank=rank,
-                world_size=n_workers,
-                save_final_weights_path=worker_final_weights_path,
-            ),
-            daemon=True,
+        process = _process(
+            run_single_distributed_update_and_save_resulting_weights,
+            model=copy.deepcopy(model),
+            inputs=worker_input,
+            loss_function=loss_function,
+            epsilon=epsilon,
+            learning_rate=learning_rate,
+            base_random_seed=base_seed,
+            rank=rank,
+            world_size=n_workers,
+            save_final_weights_path=worker_final_weights_path,
         )
         processes.append(process)
 
@@ -154,7 +152,9 @@ def test_distributed_mezo(
     for final_weights_path in worker_final_weights_paths[1:]:
         assert final_weights_path.exists()
         worker_final_weights = torch.load(final_weights_path)
-        torch.testing.assert_close(worker_final_weights, first_worker_final_weights)
+        torch.testing.assert_close(
+            worker_final_weights, first_worker_final_weights, check_device=False
+        )
 
     # Check that the final weights are indeed the average of the updates from each worker.
     projected_grads: list[Tensor] = []
@@ -193,3 +193,19 @@ def test_distributed_mezo(
         learning_rates=[learning_rate for _ in range(n_workers)],
     )
     torch.testing.assert_close(first_worker_final_weights, model.state_dict())
+
+
+P = ParamSpec("P")
+# ProcessType = torch.multiprocessing.Process
+
+
+def _process(
+    target: Callable[P, Any], *args: P.args, **kwargs: P.kwargs
+) -> torch.multiprocessing.Process:
+    """Typing helper so the args and kwargs of the target have to match its signature."""
+    return torch.multiprocessing.Process(
+        target=target,
+        args=args,
+        kwargs=kwargs,
+        daemon=True,
+    )
