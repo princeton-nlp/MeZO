@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "mezo"
+version = "0.0.1"
+description = "Fine-tuning LLMs using Forward Passes"
+authors = ["Sadhika Malladi <smalladi@princeton.edu>", "Tianyu Gao <tianyug@princeton.edu>"]
+license = "MIT"
+readme = "README.md"
+packages = [
+    { include = "mezo"}
+]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+torch = "^2.1.2"
+transformers = "^4.36.2"
+datasets = "^2.15.0"
+tqdm = "^4.66.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.3"
+pytest-regressions = "^2.5.0"
+pre-commit = "^3.6.0"
+
+
+[tool.poetry-dynamic-versioning]
+enable = true
+[build-system]
+requires = ["poetry-core>=1.0.0", "poetry-dynamic-versioning>=1.0.0,<2.0.0"]
+build-backend = "poetry_dynamic_versioning.backend"

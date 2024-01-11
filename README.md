@@ -22,6 +22,13 @@ MeZO demonstrates comparable performance to fine-tuning with backpropagation acr
   </em>
 </p>
 
+## Installation
+
+
+```bash
+pip install git+https://www.github.com/lebrice/MeZO
+```
+
 
 ## Reproduce our paper results
 
